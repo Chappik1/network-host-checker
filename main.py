@@ -1,38 +1,59 @@
-import os
-import time
-from datetime import datetime
+import argparse
+import asyncio
+import logging
+from pathlib import Path
 
-print("=== ЗАПУСК ПРОДВИНУТОГО МОНИТОРИНГА ===")
-try:
-    while True:
-        try:
-            with open("targets.txt", "r") as file:
-                for line in file:
-                    ip = line.strip()
-                    if not ip:
-                        continue
-                    
-                    print(f"[i] Проверяем {ip}...")
-                    response = os.system(f"ping -c 1 {ip} > /dev/null 2>&1")
 
-                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
 
-                    if response == 0:
-                        print(f" [+] успех! хост {ip} доволен.")
-                        with open("report.txt", "a") as log_file:
-                            log_file.write(f"[{now}] [+] {ip} доступен\n")
-                    else:
-                        print(f" [-] Ошибка! хост {ip} НЕ отвечает.")
-                        with open("report.txt", "a") as log_file:
-                            log_file.write(f"[{now}] [-] {ip} НЕ ОТВЕЧАЕТ\n")
-                            
-        except FileNotFoundError:
-            print(" [!] КРИТИЧЕСКАЯ ОШИБКА: файл 'targets.txt' не найден!")
-            print(" [!] Пожалуйста, создай его и закинь туда IP-адреса.")
-        
-        print("\n[*] Засыпаю на 5 секунд...\n")
-        time.sleep(5)
+async def check_host(host: str, timeout: int = 2) -> bool:
+    """Асинхронная проверка доступности хоста через системный ping."""
+    host = host.strip()
+    if not host or host.startswith("#"):
+        return None
 
-except KeyboardInterrupt:
-    print("\n\n[-] Мониторинг принудительно остановлен пользователем.")
-    print("[*] До встречи!")
+    cmd = f"ping -c 1 -W {timeout} {host}"
+
+    proc = await asyncio.create_subprocess_shell(
+        cmd,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL
+    )
+
+    await proc.wait()
+    is_up = (proc.returncode == 0)
+
+    if is_up:
+        logging.info(f"✅ Host {host:<20} is UP")
+    else:
+        logging.warning(f"❌ Host {host:<20} is DOWN")
+
+    return is_up
+
+async def main():
+
+    parser = argparse.ArgumentParser(description="Async Network Host Checker")
+    parser.add_argument("-f", "--file", default="targets.txt", help="Путь к файлу со списком хостов")
+    parser.add_argument("-t", "--timeout", type=int, default=2, help="Таймаут ответа (сек)")
+    args = parser.parse_args()
+
+    targets_path = Path(args.file)
+    if not targets_path.exists():
+        logging.error(f"Файл {args.file} не найден!")
+        return
+
+
+    with open(targets_path, "r") as f:
+        hosts = [line.strip() for line in f if line.strip()]
+
+    logging.info(f"Запуск проверки {len(hosts)} хостов...")
+
+    tasks = [check_host(host, args.timeout) for host in hosts]
+    await asyncio.gather(*tasks)
+
+if __name__ == "__main__":
+    asyncio.run(main())
